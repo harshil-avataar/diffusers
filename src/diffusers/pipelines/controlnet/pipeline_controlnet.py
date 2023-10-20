@@ -790,7 +790,80 @@ class StableDiffusionControlNetPipeline(
             texture_map=mesh.textures._maps_padded[0,...,:3]
             )
 
+    @torch.no_grad()
+    def get_avg_latent(self,latents,i,j, corr,px,py):
+        
+        # px,py = torch.where(mask)
+        px, py = (px // 8) , ( py // 8 )
+        cords_proj = corr[px*8,py *8].astype(np.int32)
+        cords_proj //= 8 
 
+        # latents[i,:,cords_proj[:,1],cords_proj[:,0]] = (latents[i,:,cords_proj[:,1],cords_proj[:,0]] + latents[j,:,px,py]) / 2 
+        latents[i,:,cords_proj[:,1],cords_proj[:,0]] = (latents[j,:,px,py])  
+
+        return latents
+
+    def avg_with_correspondences(self, latents, correspondences, masks):
+        masks = masks.detach().cpu().numpy()
+        correspondences = correspondences.detach().cpu().numpy()
+
+        i1, j1 = 0, 1
+
+        px,py = np.where(masks[0,i1,j1])
+        # px,py = px.detach().cpu().numpy(), py.detach().cpu().numpy()
+        corr = correspondences[0,i1,j1,...]
+        l3 = latents.clone()
+        l1 = self.get_avg_latent(l3,i1,j1,corr,px,py )
+
+        px, py = (px // 8) , ( py // 8 )
+        cords_proj = corr[px*8,py *8].astype(np.int32)
+        cords_proj //= 8 
+
+        # latents[i,:,cords_proj[:,1],cords_proj[:,0]] = (latents[i,:,cords_proj[:,1],cords_proj[:,0]] + latents[j,:,px,py]) / 2 
+        latents[i1,:,cords_proj[:,1],cords_proj[:,0]] = (latents[i1,:,cords_proj[:,1],cords_proj[:,0]] + latents[j1,:,px,py]) / 2 
+        latents[j1,:,px,py] = latents[i1,:,cords_proj[:,1],cords_proj[:,0]]
+        
+
+        # i2,j2 = 1,0
+        # px,py = np.where(masks[0,i2,j2])
+
+        # corr = correspondences[0,i2,j2,...]
+
+        # l4 = latents.clone()
+        # l2 = self.get_avg_latent(l4,i2,j2,corr, px,py)
+        
+        # print((latents[i2,...] == l2[i2,...]).all())
+        latents[i1,...] = l1[i1,...]
+        # latents[i2,...] = l2[i2,...]
+
+        # px,py = corr [i,j,:] 
+        # masks = masks
+        # px,py = torch.where(masks[0,i,j])
+        # px, py = (px // 8) , ( py // 8 )
+
+        # cords_proj = corr[px*8,py *8].to(torch.long)
+
+        # cords_proj //= 8 
+        # img1 = latents[0,...]
+        # img2 = latents[1,...]
+        # # img2 = 
+        # img1[:,cords_proj[:,1],cords_proj[:,0]] = img2[:,px,py]
+        # Image.fromarray((img1[:3,...].permute(1,2,0).detach().cpu().numpy() * 255).astype(np.uint8)).save('3.png')
+
+        # zeros = torch.zeros_like(img1) 
+        # x1 = zeros.clone() 
+        # x2 = zeros.clone() 
+        # print(x1)
+
+        # x1[:,cords_proj[:,1],cords_proj[:,0]] = img2[:,px,py]
+        # img1[:,cords_proj[:,1],cords_proj[:,0]] = x2[:,px,py]
+
+        # Image.fromarray(( masks[0,i,j].detach().cpu().numpy() * 255).astype(np.uint8)).save('1.png')
+        # Image.fromarray((x1[:3,...].permute(1,2,0).detach().cpu().numpy() * 255).astype(np.uint8)).save('1.png')
+        # Image.fromarray((img1[:3,...].permute(1,2,0).detach().cpu().numpy() * 255).astype(np.uint8)).save('2.png')
+        return latents 
+        # print('asdf')
+        # return 
 
         
     @torch.no_grad()
@@ -800,6 +873,8 @@ class StableDiffusionControlNetPipeline(
         mesh,
         poses,
         args,
+        correspondences,
+        masks,
         frag_old,
         prompt: Union[str, List[str]] = None,
         image: PipelineImageInput = None,
@@ -1039,13 +1114,6 @@ class StableDiffusionControlNetPipeline(
 
         mesh_noised = mesh
         sc = 1
-        # texture_latent = randn_tensor((2048 // sc,4096  // sc,3),dtype = torch.float32 ,device = device, generator = generator)
-        
-        # mesh_noised.textures =  TexturesUV(
-        #     maps = texture_latent[None,...],
-        #     faces_uvs = faces_uvs[None, ...],
-        #     verts_uvs = verts_uvs[None, ...]
-        # )
 
 
         mesh.textures.sampling_mode = 'nearest'
@@ -1068,30 +1136,20 @@ class StableDiffusionControlNetPipeline(
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
 
         if latents == None:
-            latent_dim = 1024
+            latent_dim = 64
             shape = (batch_size,num_channels_latents,latent_dim,latent_dim)
             # latents = torch.ones((batch_size,num_channels_latents,latent_dim,latent_dim))
             latents = torch.randn(shape,device = 'cuda',generator=generator,dtype=torch.float32 )   
             latents = latents * self.scheduler.init_noise_sigma
 
 
-        # self.mesh = 
-        latents = self.render_from_mesh(mesh,latents.clone(),poses,latent_dim)# (poses,4,64,64)
-        mesh_noised.textures = self.calc_backprojected_texture(mesh_noised,latents[:,:3,...],poses,i)
-        latents2 = self.render_from_mesh(mesh_noised,latents.clone(),poses,latent_dim) # (poses,4,64,64) # (poses,4,64,64)
-    
 
-        print("mse:",((latents - latents2)**2).sum())
-
-        Image.fromarray((255*latents[0,:3,...].permute(1,2,0).cpu().numpy()).astype(np.uint8)).save('1.png')
-        Image.fromarray((255*latents2[0,:3,...].permute(1,2,0).cpu().numpy()).astype(np.uint8)).save('2.png')
-        Image.fromarray((255*torch.abs((latents - latents2))[0,:3,...].permute(1,2,0).cpu().numpy()).astype(np.uint8)).save('abs_diff.png')
-        self.save_mesh(mesh_noised,'123')
         # latents2 = torch.randn((1,4,96,64),device = 'cuda',generator=generator,dtype=torch.float16 )   
         latents = torch.randn(shape,device = 'cuda',generator=generator,dtype=torch.float16 )   
         # latents[0,...] = latents2[...,:64,:]
         # latents[1,...] = latents2[...,:64,:]
         # latents 
+
         
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
@@ -1154,13 +1212,16 @@ class StableDiffusionControlNetPipeline(
                 # compute the previous noisy sample x_t -> x_t-1
                 denoised_latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
 
+                print(denoised_latents[0].std(),denoised_latents[0].mean() )
+                latents = self.avg_with_correspondences(denoised_latents,correspondences,masks)
+                print(latents[0].std(),latents[0].mean())
 
                 # if i > 40:
-                mesh_noised.textures = self.calc_backprojected_texture(mesh_noised,denoised_latents,poses,i)
-                mesh_noised.textures.sampling_mode = 'nearest'
-                latents = self.render_from_mesh(mesh_noised,latents.clone(),poses,64) # (poses,4,64,64)
-                # else:
-                self.save_mesh(mesh_noised,'1')
+                # mesh_noised.textures = self.calc_backprojected_texture(mesh_noised,denoised_latents,poses,i)
+                # mesh_noised.textures.sampling_mode = 'nearest'
+                # latents = self.render_from_mesh(mesh_noised,latents.clone(),poses,64) # (poses,4,64,64)
+                # # else:
+                # self.save_mesh(mesh_noised,'1')
 
 
                 # mesh_noised.textures = self.calc_backprojected_texture(mesh_noised,latents,poses,i)
@@ -1168,7 +1229,6 @@ class StableDiffusionControlNetPipeline(
 
 
                     # latents = denoised_latents.clone() 
-                print(denoised_latents[0].std(),denoised_latents[0].mean(), latents[0].std(),latents[0].mean())
                 # print(denoised_latents[1].std(),denoised_latents[1].mean(), latents[1].std(),latents[1].mean())
 
                 # Image.fromArray(latents[...,:3].cpu().numpy())
