@@ -27,7 +27,6 @@ import PIL.Image
 import torch
 import torch.nn.functional as F
 from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer
-from Text2Tex.lib.projection_helper import backproject_latent_mesh
 from pytorch3d.renderer import TexturesUV
 
 
